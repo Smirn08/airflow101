@@ -59,22 +59,30 @@ def download_payment_status_info():
     status_df.to_csv(f"{HOME_PATH}/status.csv", index=None)
 
 
-def create_dataframe():
+def download_customers_and_goods_data():
     pg_hook = PostgresHook(postgres_conn_id="shop_database")
     hook_conn_obj = pg_hook.get_conn()
     hook_conn_obj.autocommit = True
 
-    customers = pd.read_sql_query("SELECT * FROM public.customers", con=hook_conn_obj)
-    goods = pd.read_sql_query("SELECT * FROM public.goods", con=hook_conn_obj)
+    customers_df = pd.read_sql_query("SELECT * FROM public.customers", con=hook_conn_obj)
+    goods_df = pd.read_sql_query("SELECT * FROM public.goods", con=hook_conn_obj)
+    
+    customers_df.to_csv(f"{HOME_PATH}/customers.csv", index=None)
+    goods_df.to_csv(f"{HOME_PATH}/goods.csv", index=None)
+
+
+def create_dataframe():
     orders_df = read_csv(f"{HOME_PATH}/orders.csv", sep=",", keep_default_na=False)
     status_df = read_csv(f"{HOME_PATH}/status.csv", sep=",", keep_default_na=False)
+    customers_df = read_csv(f"{HOME_PATH}/customers.csv", sep=",", keep_default_na=False)
+    goods_df = read_csv(f"{HOME_PATH}/goods.csv", sep=",", keep_default_na=False)
 
-    orders_and_status = pd.merge(orders_df, status_df, on=["uuid"])
-    orders_with_price_and_status = pd.merge(
-        orders_and_status, goods, how="left", left_on="product", right_on="name"
+    orders_and_status_df = pd.merge(orders_df, status_df, on=["uuid"])
+    orders_with_price_and_status_df = pd.merge(
+        orders_and_status_df, goods_df, how="left", left_on="product", right_on="name"
     )
     full_dataframe = pd.merge(
-        orders_with_price_and_status, customers, how="left", left_on="email", right_on="email"
+        orders_with_price_and_status_df, customers_df, how="left", left_on="email", right_on="email"
     )
 
     today_timestamp = pd.to_datetime("now")
@@ -160,6 +168,12 @@ task_download_payment_status_info = PythonOperator(
     dag=dag_hw02_shopping_data_loader,
 )
 
+task_download_customers_and_goods_data = PythonOperator(
+    task_id="download_customers_and_goods_data",
+    python_callable=download_customers_and_goods_data,
+    dag=dag_hw02_shopping_data_loader,
+)
+
 task_create_dataframe = PythonOperator(
     task_id="create_dataframe",
     python_callable=create_dataframe,
@@ -173,5 +187,4 @@ task_load_to_database = PythonOperator(
 )
 
 task_download_and_preprocessing_orders >> task_download_payment_status_info >> \
-task_create_dataframe >> task_load_to_database
-
+task_download_customers_and_goods_data >> task_create_dataframe >> task_load_to_database
