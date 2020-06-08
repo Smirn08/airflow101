@@ -144,6 +144,7 @@ def load_to_database():
                 "amount",
                 "last_modified_at",
             )
+            cursor.execute(f"TRUNCATE public.{table_name}")
             cursor.copy_from(f, table_name, columns=columns, sep=",", null='')
 
 
