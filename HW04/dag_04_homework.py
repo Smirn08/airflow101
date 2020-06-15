@@ -63,10 +63,12 @@ class TelegramMessageSenderOperator(BaseOperator):
         upstream_task_ids = [task.task_id for task in upstream_tasks]
         print(upstream_task_ids)
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        text = "Пайплайн не завершился\n" \
-            f"DAG ID: {context['dag'].dag_id}\n" \
-            f"Task ID: {upstream_task_ids[0]}\n" \
+        text = (
+            "Пайплайн не завершился\n"
+            f"DAG ID: {context['dag'].dag_id}\n"
+            f"Task ID: {upstream_task_ids[0]}\n"
             f"Ошибка: {str(self.error_message)}"
+        )
         body = {
             "chat_id": self.chat_id,
             "text": text,
@@ -79,7 +81,7 @@ class TelegramMessageSenderOperator(BaseOperator):
             raise AirflowException("Не удалось отправить сообщение")
 
 
-def csv_null_data_validator(context, xcom_task_id, true_task_id, false_task_id):
+def csv_null_data_sanity_check(xcom_task_id: str, true_task_id: str, false_task_id: str, **context):
     dag_ti = context["task_instance"]
     file_names = dag_ti.xcom_pull(task_ids=xcom_task_id, key="file_name")
 
@@ -139,16 +141,6 @@ def download_and_preprocessing_orders(**context):
     context["task_instance"].xcom_push(key="file_name", value=[ORDERS_FILENAME])
 
 
-def orders_sanity_check(**context):
-    next_task = csv_null_data_validator(
-        context=context,
-        xcom_task_id="download_and_preprocessing_orders",
-        true_task_id="download_payment_status_info",
-        false_task_id="telegram_csv_allert",
-    )
-    return next_task
-
-
 def download_payment_status_info(**context):
     status = requests.get(JSON_URL, stream=True)
     status_df = pd.read_json(status.text).T
@@ -157,16 +149,6 @@ def download_payment_status_info(**context):
     status_df.to_csv(f"{HOME_PATH}/{STATUS_FILENAME}", index=None)
 
     context["task_instance"].xcom_push(key="file_name", value=[STATUS_FILENAME])
-
-
-def payment_status_info_sanity_check(**context):
-    next_task = csv_null_data_validator(
-        context=context,
-        xcom_task_id="download_payment_status_info",
-        true_task_id="download_customers_and_goods_data",
-        false_task_id="telegram_json_allert",
-    )
-    return next_task
 
 
 def download_customers_and_goods_data(**context):
@@ -181,16 +163,6 @@ def download_customers_and_goods_data(**context):
     goods_df.to_csv(f"{HOME_PATH}/{GOODS_FILENAME}", index=None)
 
     context["task_instance"].xcom_push(key="file_name", value=[CUSTOMERS_FILENAME, GOODS_FILENAME])
-
-
-def customers_and_goods_data_sanity_check(**context):
-    next_task = csv_null_data_validator(
-        context=context,
-        xcom_task_id="download_customers_and_goods_data",
-        true_task_id="create_dataframe",
-        false_task_id="telegram_data_pg_allert",
-    )
-    return next_task
 
 
 def create_dataframe(**context):
@@ -239,16 +211,6 @@ def create_dataframe(**context):
     final_dataset.to_csv(f"{HOME_PATH}/{FINAL_DATASET_FILENAME}", index=False, na_rep=None)
 
     context["task_instance"].xcom_push(key="file_name", value=[FINAL_DATASET_FILENAME])
-
-
-def final_dataframe_sanity_check(**context):
-    next_task = csv_null_data_validator(
-        context=context,
-        xcom_task_id="create_dataframe",
-        true_task_id="load_to_database",
-        false_task_id="telegram_final_allert",
-    )
-    return next_task
 
 
 def load_to_database():
@@ -303,28 +265,48 @@ task_postgres_health_check = BranchPythonOperator(
 
 task_orders_sanity_check = BranchPythonOperator(
     task_id="orders_sanity_check",
-    python_callable=orders_sanity_check,
+    python_callable=csv_null_data_sanity_check,
+    op_kwargs={
+        "xcom_task_id": "download_and_preprocessing_orders",
+        "true_task_id": "download_payment_status_info",
+        "false_task_id": "telegram_csv_allert",
+    },
     provide_context=True,
     dag=dag_hw04_branch_health_check,
 )
 
 task_payment_status_info_sanity_check = BranchPythonOperator(
     task_id="payment_status_info_sanity_check",
-    python_callable=payment_status_info_sanity_check,
+    python_callable=csv_null_data_sanity_check,
+    op_kwargs={
+        "xcom_task_id": "download_payment_status_info",
+        "true_task_id": "download_customers_and_goods_data",
+        "false_task_id": "telegram_json_allert",
+    },
     provide_context=True,
     dag=dag_hw04_branch_health_check,
 )
 
 task_customers_and_goods_data_sanity_check = BranchPythonOperator(
     task_id="customers_and_goods_data_sanity_check",
-    python_callable=customers_and_goods_data_sanity_check,
+    python_callable=csv_null_data_sanity_check,
+    op_kwargs={
+        "xcom_task_id": "download_customers_and_goods_data",
+        "true_task_id": "create_dataframe",
+        "false_task_id": "telegram_data_pg_allert",
+    },
     provide_context=True,
     dag=dag_hw04_branch_health_check,
 )
 
 task_final_dataframe_sanity_check = BranchPythonOperator(
     task_id="final_dataframe_sanity_check",
-    python_callable=final_dataframe_sanity_check,
+    python_callable=csv_null_data_sanity_check,
+    op_kwargs={
+        "xcom_task_id": "create_dataframe",
+        "true_task_id": "load_to_database",
+        "false_task_id": "telegram_final_allert",
+    },
     provide_context=True,
     dag=dag_hw04_branch_health_check,
 )
@@ -403,10 +385,7 @@ task_create_dataframe = PythonOperator(
 )
 
 task_load_to_database = PythonOperator(
-    task_id="load_to_database",
-    python_callable=load_to_database,
-    provide_context=True,
-    dag=dag_hw04_branch_health_check,
+    task_id="load_to_database", python_callable=load_to_database, dag=dag_hw04_branch_health_check,
 )
 
 
